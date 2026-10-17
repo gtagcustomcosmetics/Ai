@@ -282,7 +282,7 @@ function makeGorilla(){
 const _S=V(),_W=V(),_C=V(),_D=V(),_q=new THREE.Quaternion(),_Qw=new THREE.Quaternion(),_Pq=new THREE.Quaternion();
 // arm direction in gorilla-local space: a = swing forward(+)/back(-), b = swing outward
 function armDir(k,a,b,out){const s=k?-1:1;return out.set(s*Math.sin(b)*Math.cos(a),-Math.cos(b)*Math.cos(a),Math.sin(a)).normalize()}
-const ARM_REACH=0.88; // 1 = arm fully straight (elbow can't bend); lower = more elbow bend, shorter reach
+const ARM_REACH=1; // 1 = arm fully straight (elbow can't bend); lower = more elbow bend, shorter reach
 function armOffset(g,k,a,b,out){return out.copy(armDir(k,a,b,_D)).multiplyScalar(g.rig.len[k]*ARM_REACH).add(g.rig.sh[k])}
 function aim(g,k,a,b){
   const up=g.rig.upper[k];g.group.updateMatrixWorld(true);
