@@ -536,7 +536,7 @@ function stepRemotes(dt){
   const k=Math.min(1,12*dt);
   remotes.forEach(r=>{const d=r.tp;if(!d)return;
     r.pos.lerp(_tv.set(d.p[0],d.p[1],d.p[2]),k);r.ry+=Math.atan2(Math.sin(d.r-r.ry),Math.cos(d.r-r.ry))*k;
-    r.g.group.position.copy(r.pos);r.g.group.scale.setScalar(d.s||1);r.g.group.rotation.y=r.ry;if(r.headBaseQ)r.g.rig.head.quaternion.copy(r.headBaseQ).multiply(new THREE.Quaternion().setFromAxisAngle(_X,-(d.hp||0)));r.g.group.updateMatrixWorld(true);
+    r.g.group.position.copy(r.pos);r.g.group.scale.setScalar(d.s||1);r.g.group.rotation.set(0,r.ry,0);if(r.headBaseQ)r.g.rig.head.quaternion.copy(r.headBaseQ).multiply(new THREE.Quaternion().setFromAxisAngle(_X,-(d.hp||0)));r.g.group.updateMatrixWorld(true);
     const yaw=r.ry-PI;_fw.set(-Math.sin(yaw),0,-Math.cos(yaw));_rt.set(Math.cos(yaw),0,-Math.sin(yaw));
     for(let i=0;i<2;i++){r.h[i].lerp(_tv.set(d.h[i*3],d.h[i*3+1],d.h[i*3+2]),k);
       _pole.set(0,-.6,0).addScaledVector(_rt,i?.6:-.6).addScaledVector(_fw,-.5);ik(r.g,i,r.h[i],_pole)}
@@ -796,7 +796,7 @@ function stepPlayer(dt){
     P.a[k]=Math.max(-1.4,Math.min(1.6,P.a[k]+ky*5*dt));
     P.b[k]=Math.max(-0.3,Math.min(1.5,P.b[k]+kx*5*dt*(k?1:-1)));
   }
-  P.g.group.rotation.y=P.yaw+PI;P.g.group.updateMatrixWorld(true);gq.copy(P.g.group.quaternion);
+  P.g.group.rotation.set(0,P.yaw+PI,0);P.g.group.updateMatrixWorld(true);gq.copy(P.g.group.quaternion);
   for(let k=0;k<2;k++)if(!act[k]&&!P.touch[k]){P.a[k]+=(0-P.a[k])*Math.min(1,6*dt);P.b[k]+=(0.15-P.b[k])*Math.min(1,6*dt)}
   disp.set(0,0,0);let touching=false;const off=[V(),V()],ow=[V(),V()];
   for(let k=0;k<2;k++){
@@ -831,8 +831,20 @@ function stepPlayer(dt){
       if(cr.gy>0.7&&P.vel.length()<1.5)P.vel.set(0,0,0)}} // come to rest on ground instead of creeping down slopes
   if(Math.abs(P.pos.x)>68){P.pos.x=Math.sign(P.pos.x)*68;P.vel.x=0}
   if(Math.abs(P.pos.z)>68){P.pos.z=Math.sign(P.pos.z)*68;P.vel.z=0}
-  P.g.group.position.copy(P.pos);P.g.group.updateMatrixWorld(true);
-  aim(P.g,0,P.a[0],P.b[0]);aim(P.g,1,P.a[1],P.b[1]);
+  P.g.group.position.copy(P.pos);
+  // Keep the avatar root upright. Only yaw is allowed to change; no accumulated
+  // pitch/roll is applied to the character root.
+  P.g.group.rotation.set(0,P.yaw+PI,0);
+  P.g.group.updateMatrixWorld(true);
+  // Solve the full two-bone chain instead of rotating only the upper arm.
+  // Each target drives upper arm + elbow/forearm, with the wrist/hand reaching it.
+  const desktopPole=V();
+  for(let k=0;k<2;k++){
+    armOffset(P.g,k,P.a[k],P.b[k],off[k]);
+    const target=P.g.group.localToWorld(off[k].clone());
+    desktopPole.set(k?0.6:-0.6,-0.6,-0.5).applyQuaternion(gq);
+    ik(P.g,k,target,desktopPole);
+  }
 }
 // =====================================================================================================================
 // ---------- AI: a population of gorillas that LEARN to reach targets (neuroevolution) ----------
@@ -1543,7 +1555,7 @@ renderer.setAnimationLoop(()=>{
   const dt=Math.min(clock.getDelta(),1/30);t+=dt;
   if(renderer.xr.isPresenting)stepVR(dt);else if(AI.on)AI.tick(dt);else stepPlayer(dt);
   if(P.g.spin)P.g.spin.rotation.y+=dt*25;
-  furTick(t);stepRemotes(dt);if(!AI.on)netTick(dt);gameTick(dt);voiceTick();vrMenuTick(dt);camTick(dt);
+  furTick(t);stepRemotes(dt);netTick(dt);gameTick(dt);voiceTick();vrMenuTick(dt);camTick(dt);
   const f=V(-Math.sin(P.yaw),0,-Math.cos(P.yaw));
   if(renderer.xr.isPresenting){}
   else if(AI.on){AI.camera(dt)}
