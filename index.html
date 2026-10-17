@@ -282,7 +282,7 @@ function makeGorilla(){
 const _S=V(),_W=V(),_C=V(),_D=V(),_q=new THREE.Quaternion(),_Qw=new THREE.Quaternion(),_Pq=new THREE.Quaternion();
 // arm direction in gorilla-local space: a = swing forward(+)/back(-), b = swing outward
 function armDir(k,a,b,out){const s=k?-1:1;return out.set(s*Math.sin(b)*Math.cos(a),-Math.cos(b)*Math.cos(a),Math.sin(a)).normalize()}
-const ARM_REACH=2; // 1 = arm fully straight (elbow can't bend); lower = more elbow bend, shorter reach
+const ARM_REACH=0.88; // 1 = arm fully straight (elbow can't bend); lower = more elbow bend, shorter reach
 function armOffset(g,k,a,b,out){return out.copy(armDir(k,a,b,_D)).multiplyScalar(g.rig.len[k]*ARM_REACH).add(g.rig.sh[k])}
 function aim(g,k,a,b){
   const up=g.rig.upper[k];g.group.updateMatrixWorld(true);
@@ -1174,8 +1174,37 @@ const AI=(()=>{
     else if(S.mode==='tag')beacon.visible=false;
     else if(F){const tg=tgtFor(F);beacon.position.set(tg.x,tg.y,tg.z);beacon.visible=true}
   }
+  // ---------- free camera ----------
+  const FC={pos:V(),yaw:0,pitch:0,speed:14,drag:false};
+  const _fe=new THREE.Euler(),_fd=V(),_fr=V();
+  function freeStart(){cam.updateMatrixWorld(true);_fe.setFromQuaternion(cam.quaternion,'YXZ');FC.pos.copy(cam.position);FC.yaw=_fe.y;FC.pitch=_fe.x}
+  function freeCam(dt){
+    const ae=document.activeElement,typing=ae&&(ae.tagName==='INPUT'||ae.tagName==='SELECT');
+    if(!typing){
+      const f=(key.KeyW?1:0)-(key.KeyS?1:0),r=(key.KeyD?1:0)-(key.KeyA?1:0),u=(key.KeyE?1:0)-(key.KeyQ?1:0)+(key.Space?1:0);
+      const sp=FC.speed*((key.ShiftLeft||key.ShiftRight)?3:1)*dt;
+      _fd.set(-Math.sin(FC.yaw)*Math.cos(FC.pitch),Math.sin(FC.pitch),-Math.cos(FC.yaw)*Math.cos(FC.pitch));
+      _fr.set(Math.cos(FC.yaw),0,-Math.sin(FC.yaw));
+      FC.pos.addScaledVector(_fd,f*sp).addScaledVector(_fr,r*sp);FC.pos.y+=u*sp;
+    }
+    cam.position.copy(FC.pos);cam.rotation.set(FC.pitch,FC.yaw,0,'YXZ');
+  }
+  renderer.domElement.addEventListener('mousedown',e=>{if(e.button===2&&S.on&&S.cam==='free')FC.drag=true});
+  addEventListener('mouseup',e=>{if(e.button===2)FC.drag=false});
+  addEventListener('mousemove',e=>{
+    if(!FC.drag||!S.on||S.cam!=='free')return;
+    FC.yaw-=e.movementX*0.003;FC.pitch=clamp(FC.pitch-e.movementY*0.003,-1.5,1.5);
+  });
+  renderer.domElement.addEventListener('wheel',e=>{
+    if(!S.on||S.cam!=='free')return;
+    FC.speed=clamp(FC.speed*(e.deltaY<0?1.2:1/1.2),2,150);e.preventDefault();
+  },{passive:false});
+  addEventListener('keydown',e=>{
+    if(e.code==='Space'&&S.on&&S.cam==='free'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='SELECT')e.preventDefault();
+  });
   const _cd=V(0,0,1),_cw=V(),_cl=V();
   function camera(dt){
+    if(S.cam==='free'){freeCam(dt);return}
     const F=S.follow||S.agents[0];if(!F)return;
     if(S.cam==='top'){
       let cx=0,cz=0,c=0;for(const A of S.agents){cx+=A.pos.x;cz+=A.pos.z;c++}cx/=c||1;cz/=c||1;
@@ -1200,7 +1229,7 @@ const AI=(()=>{
     '<div class="airow">Population <select id="ai_pop"><option>12</option><option>24</option><option>36</option><option>48</option></select></div>'+
     '<div class="airow"><button id="ai_pause">Pause</button><button id="ai_cam">Cam: Follow</button><button id="ai_reset">Restart</button></div>'+
     '<div class="airow"><button id="ai_exp">⬇ Export</button><button id="ai_imp">⬆ Import</button><input id="ai_file" type="file" accept=".json" style="display:none"></div>'+
-    '<small>Gold = leading gorillas, blue = the rest, grey = gave up. The green beacon is the leader\'s target. Progress saves automatically. <b>T</b> = take control.</small>'+
+    '<small>Gold = leading gorillas, blue = the rest, grey = gave up. The green beacon is the leader\'s target. Progress saves automatically. <b>T</b> = take control.<br>Free cam: hold <b>right mouse</b> to look, <b>WASD</b> fly, <b>Q/E</b> down/up, <b>Shift</b> fast, wheel = speed.</small>'+
     '</div>';
   document.body.appendChild(el);
   ['mousedown','click','mouseup','wheel'].forEach(ev=>el.addEventListener(ev,e=>e.stopPropagation()));
@@ -1247,7 +1276,13 @@ const AI=(()=>{
   q('ai_speed').value=S.speed;q('ai_speed').oninput=e=>{S.speed=+e.target.value;q('ai_speedv').textContent=S.speed+'×'};
   q('ai_pop').onchange=e=>{S.popN=+e.target.value;resizePop();if(S.mode==='train')startGen();save()};
   q('ai_pause').onclick=()=>{S.paused=!S.paused;q('ai_pause').textContent=S.paused?'Resume':'Pause';refreshUI()};
-  q('ai_cam').onclick=()=>{S.cam=S.cam==='follow'?'top':'follow';q('ai_cam').textContent='Cam: '+(S.cam==='follow'?'Follow':'Overview')};
+  const CAMS=['follow','top','free'],CAM_TXT={follow:'Follow',top:'Overview',free:'Free'};
+  q('ai_cam').title='Free cam: hold right mouse to look, WASD fly, Q/E down/up, Shift = fast, wheel = speed';
+  q('ai_cam').onclick=()=>{
+    S.cam=CAMS[(CAMS.indexOf(S.cam)+1)%CAMS.length];
+    if(S.cam==='free')freeStart();
+    q('ai_cam').textContent='Cam: '+CAM_TXT[S.cam];
+  };
   q('ai_reset').onclick=()=>{if(!confirm('Forget everything the gorillas learned and start over?'))return;S.gen=0;S.hist=[];S.champ=null;S.lastBest=0;S.reached=0;S.sigma=0.3;freshPop();save();setMode(S.mode)};
   q('ai_exp').onclick=()=>{const b=new Blob([JSON.stringify(pack())],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='monke-brain.json';document.body.appendChild(a);a.click();a.remove()};
   q('ai_imp').onclick=()=>q('ai_file').click();
