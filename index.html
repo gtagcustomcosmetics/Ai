@@ -1047,59 +1047,43 @@ const AI=(()=>{
   function freshPop(){S.pop=[];for(let i=0;i<S.popN;i++)S.pop.push(randGenome())}
 
   // ---------- visuals ----------
-  // Render each training agent as a complete rigged gorilla, not sphere placeholders.
-  const agentModels=[];
+  const bodyM=new THREE.InstancedMesh(new THREE.SphereGeometry(R*SIZE,18,12),new THREE.MeshStandardMaterial({roughness:.55,transparent:true,opacity:.9}),NMAX);
+  const handM=new THREE.InstancedMesh(new THREE.SphereGeometry(0.15,10,8),new THREE.MeshStandardMaterial({roughness:.5}),NMAX*2);
+  [bodyM,handM].forEach(m=>{m.frustumCulled=false;m.count=0;scene.add(m)});
   const beacon=new THREE.Group();
   {const mat=new THREE.MeshBasicMaterial({color:0x66ffaa,transparent:true,opacity:.35,depthWrite:false,side:THREE.DoubleSide});
     const pil=new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.35,20,16,1,true),mat);pil.position.y=10;beacon.add(pil);
     const ring=new THREE.Mesh(new THREE.RingGeometry(REACH-0.18,REACH,40),mat);ring.rotation.x=-PI/2;ring.position.y=0.15;beacon.add(ring);
     scene.add(beacon)}
+  const _m=new THREE.Matrix4(),_qq=new THREE.Quaternion(),_ps=V(),_sc=V(1,1,1),_col=new THREE.Color(),_zero=V(0.0001,0.0001,0.0001);
   const cAlive=new THREE.Color(0x4ab3ff),cDead=new THREE.Color(0x6b7280),cTop=new THREE.Color(0xffd54a);
-  function makeAgentVisual(){
-    const g=makeGorilla();
-    g.group.visible=false;
-    g.group.traverse(o=>{
-      if(o.isMesh||o.isSkinnedMesh){
-        if(Array.isArray(o.material))o.material=o.material.map(m=>m.clone());
-        else o.material=o.material.clone();
-      }
-    });
-    agentModels.push(g);return g;
-  }
-  function tintAgent(g,color){
-    g.group.traverse(o=>{
-      if(!(o.isMesh||o.isSkinnedMesh))return;
-      const mats=Array.isArray(o.material)?o.material:[o.material];
-      for(const m of mats){
-        if(m.color&&!m.userData.aiOriginalColor)m.userData.aiOriginalColor=m.color.clone();
-        if(m.color&&m.userData.aiOriginalColor)m.color.copy(m.userData.aiOriginalColor).lerp(color,0.62);
-      }
-    });
-  }
-  function syncAgentRig(g,A){
-    g.group.scale.setScalar(SIZE);g.group.position.copy(A.pos);g.group.rotation.set(0,A.yaw+PI,0);g.group.updateMatrixWorld(true);
-    for(let k=0;k<2;k++){
-      const target=V(A.pos.x+A.ow[k].x,A.pos.y+A.ow[k].y,A.pos.z+A.ow[k].z);
-      const pole=V(A.pos.x+(k===0?-0.8:0.8),A.pos.y-0.8,A.pos.z+0.1);
-      ik(g,k,target,pole);
-    }
+  function chooseFollow(){
+    let best=null;for(const A of S.agents)if(A.alive&&(!best||A.fit>best.fit))best=A;
+    const f=S.follow;
+    if(!f||!f.alive||(best&&best!==f&&best.fit>f.fit+3))S.follow=best||f||S.agents[0];
   }
   function syncPlayer(A){
     P.pos.copy(A.pos);P.vel.copy(A.vel);P.yaw=A.yaw;P.a[0]=A.a[0];P.a[1]=A.a[1];P.b[0]=A.b[0];P.b[1]=A.b[1];
-    syncAgentRig(P.g,A);
+    const g=P.g.group;g.scale.setScalar(SIZE);g.position.copy(A.pos);g.rotation.y=A.yaw+PI;g.updateMatrixWorld(true);
+    aim(P.g,0,A.a[0],A.b[0]);aim(P.g,1,A.a[1],A.b[1]);
   }
   function updateVisuals(){
-    chooseFollow();const ag=S.agents,n=ag.length;const rank=ag.slice().sort((a,b)=>b.fit-a.fit);
-    while(agentModels.length<n)makeAgentVisual();
-    for(let i=0;i<agentModels.length;i++){
-      const g=agentModels[i];if(i>=n){g.group.visible=false;continue}
-      const A=ag[i],isFollow=A===S.follow;g.group.visible=!isFollow;
-      if(!isFollow){
-        syncAgentRig(g,A);const top=rank.indexOf(A)<3&&A.fit>0;
-        tintAgent(g,!A.alive?cDead:top?cTop:cAlive);
-      }
+    chooseFollow();
+    const ag=S.agents,n=ag.length;
+    const rank=ag.slice().sort((a,b)=>b.fit-a.fit);
+    bodyM.count=n;handM.count=n*2;
+    for(let i=0;i<n;i++){
+      const A=ag[i],hide=A===S.follow;
+      _ps.copy(A.pos);_qq.setFromAxisAngle(_Y,A.yaw+PI);
+      _m.compose(_ps,_qq,hide?_zero:_sc);bodyM.setMatrixAt(i,_m);
+      for(let k=0;k<2;k++){_ps.set(A.pos.x+A.ow[k].x,A.pos.y+A.ow[k].y,A.pos.z+A.ow[k].z);_m.compose(_ps,_qq,hide?_zero:_sc);handM.setMatrixAt(i*2+k,_m)}
+      const top=rank.indexOf(A)<3&&A.fit>0;
+      _col.copy(!A.alive?cDead:top?cTop:cAlive);bodyM.setColorAt(i,_col);handM.setColorAt(i*2,_col);handM.setColorAt(i*2+1,_col);
     }
-    const F=S.follow;if(F){syncPlayer(F);const tg=targetAt(F.leg);beacon.position.set(tg.x,tg.y,tg.z);beacon.visible=true}
+    bodyM.instanceMatrix.needsUpdate=handM.instanceMatrix.needsUpdate=true;
+    if(bodyM.instanceColor)bodyM.instanceColor.needsUpdate=true;if(handM.instanceColor)handM.instanceColor.needsUpdate=true;
+    const F=S.follow;
+    if(F){syncPlayer(F);const tg=targetAt(F.leg);beacon.position.set(tg.x,tg.y,tg.z);beacon.visible=true}
   }
   const _cd=V(0,0,1),_cw=V(),_cl=V();
   function camera(dt){
@@ -1163,7 +1147,7 @@ const AI=(()=>{
   q('ai_file').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{if(unpack(JSON.parse(t))){q('ai_pop').value=S.popN;save();setMode(S.mode)}else alert('That file is not a Monke AI brain (or it is from a different version).')}).catch(()=>alert('Could not read that file.'));e.target.value=''};
   function setOn(on){
     S.on=on;q('ai_body').style.display=on?'block':'none';q('ai_toggle').textContent=on?'Take control':'Back to AI';
-    beacon.visible=on;
+    bodyM.visible=handM.visible=beacon.visible=on;
     if(on){try{document.exitPointerLock()}catch(e){}$('help').style.display='none';P.g.group.visible=true}
     else{reset();$('help').style.display='flex'}
   }
