@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Monke Tag - Fan Game</title>
+<title>Monke Tag - AI</title>
 <style>
 @font-face{font-family:'Utopium';src:url('./fonts/Utopium-Regular.otf') format('opentype');font-style:normal;font-weight:400;font-display:swap}
 html,body{margin:0;height:100%;overflow:hidden;background:#9fd3f5;font-family:'Utopium',system-ui,sans-serif}
@@ -24,6 +24,20 @@ canvas{display:block}
 #mp #micbtn.on,#mp #hearbtn.on,#mp #sfxbtn.on{background:#9fe3a0;color:#000}
 #mp select{padding:4px 6px;border-radius:6px;border:0;font-size:14px}
 #mp #gmnote{font-size:12px;color:#ffd54a;line-height:1.3;margin-bottom:4px}
+
+#aipanel{position:fixed;left:10px;top:78px;width:262px;padding:10px 12px;border-radius:12px;background:#000b;color:#fff;font-size:13px;line-height:1.45;z-index:60;user-select:none}
+#aipanel .aih{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+#aipanel .aih b{font-size:15px}
+#aipanel .aisub{color:#ffd54a;font-size:12px;flex:1}
+#aipanel button,#aipanel select{padding:5px 8px;border:0;border-radius:6px;background:#fff3;color:#fff;cursor:pointer;font-size:12px;font-family:inherit}
+#aipanel select{background:#fff;color:#000}
+#aipanel button.on{background:#ffd54a;color:#000}
+#aipanel .aih button{margin-left:auto;background:#ffd54a;color:#000}
+#aipanel .airow{display:flex;align-items:center;gap:6px;margin:6px 0;flex-wrap:wrap}
+#aipanel input[type=range]{flex:1;min-width:80px}
+#aipanel canvas{display:block;width:236px;height:64px;border-radius:6px;margin:6px 0}
+#aipanel small{display:block;opacity:.75;font-size:11px;line-height:1.35}
+@media (max-width:640px){#aipanel{top:auto;bottom:8px;left:8px;width:min(262px,calc(100vw - 16px))}}
 </style></head><body>
 <div id="hud"><div id="state"></div><div id="sub"></div></div>
 <div id="help"><div id="msg">Loading assets...</div></div>
@@ -748,10 +762,10 @@ const key={},btn={0:false,2:false};let locked=false,msgShown=false;
 addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;key[e.code]=true;if(e.code==='KeyV'||e.code==='KeyP')P.third=!P.third;if(e.code==='KeyH')cycleHat(1);if(e.code==='KeyC')cycleCol(1);if(e.code==='KeyF')cycleFur();if(e.code.startsWith('Arrow'))e.preventDefault();if(e.code==='KeyR')reset();if(e.code==='KeyM')setMic(!micOn)});
 addEventListener('keyup',e=>key[e.code]=false);
 addEventListener('contextmenu',e=>e.preventDefault());
-addEventListener('mousedown',e=>{btn[e.button]=true;if(!locked)renderer.domElement.requestPointerLock()});
+addEventListener('mousedown',e=>{btn[e.button]=true;if(!locked&&!AI.on)renderer.domElement.requestPointerLock()});
 addEventListener('mouseup',e=>btn[e.button]=false);
 $('help').addEventListener('click',()=>renderer.domElement.requestPointerLock());
-document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===renderer.domElement;$('help').style.display=locked?'none':'flex'});
+document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===renderer.domElement;$('help').style.display=(locked||AI.on)?'none':'flex'});
 $('msg').innerHTML='<b>MONKE TAG</b> (fan game)<br>Click to play. Move the mouse to look. Use <b>WASD</b> to walk around. A mirror stands in front of you.<br>Hold <b>Left Click / Q</b> = control LEFT arm<br>Hold <b>Right Click / E</b> = control RIGHT arm (hold both for both)<br>While holding, move the mouse to swing the arm.<br>Plant your hands on the ground and <b>pull back</b> to launch yourself!<br><b>VR:</b> open this page in your headset browser (Quest etc.) and tap <b>ENTER VR</b>. You are the gorilla: your head is its head and your controllers move its arms: push off the ground and pull back to launch! Right A/B respawns, <b>click right thumbstick</b> = third person, <b>click left thumbstick</b> = next hat, left X = hat color, left Y = fur color.<br><b>Keyboard:</b> <b>WASD</b> = move, mouse = look. Hold Q/E, then use the <b>arrow keys</b> to swing that arm (arrows alone = look).<br><b>P</b> (or V) = third person, <b>R</b> = reset, <b>M</b> = mic on/off.<br>The lobby host can switch the game mode (Casual / Tag) in the box on the left.';
 addEventListener('mousemove',e=>{
   if(!locked)return;
@@ -820,6 +834,337 @@ function stepPlayer(dt){
   P.g.group.position.copy(P.pos);P.g.group.updateMatrixWorld(true);
   aim(P.g,0,P.a[0],P.b[0]);aim(P.g,1,P.a[1],P.b[1]);
 }
+// =====================================================================================================================
+// ---------- AI: a population of gorillas that LEARN to reach targets (neuroevolution) ----------
+// Every gorilla is driven by a tiny neural network. It only controls what a real player controls with the mouse:
+// swing each arm (forward/back + outward) and turn. There is NO walking - it has to learn to plant its hands and pull,
+// exactly like the real game. Each generation the best brains are kept and mutated, so the next ones are a bit better.
+// The physics below is the same as stepPlayer() (same hand-pushes-body rule, same collision), just for many bodies.
+// =====================================================================================================================
+const AI=(()=>{
+  const NI=21,NH=16,NO=5,GN=NI*NH+NH+NH*NO+NO;       // network: 21 inputs -> 16 hidden (tanh) -> 5 outputs (tanh)
+  const DT=1/60,EP_T=30,STALL_T=9,REACH=2.4,REACH_BONUS=10,ARM_RATE=7,TURN_RATE=2.6,NMAX=60,MUT_P=0.15,SAVE_KEY='monkeAI_v1';
+  const S={on:true,mode:'train',paused:false,speed:6,popN:24,gen:0,sigma:0.3,cam:'follow',
+    pop:[],agents:[],targets:[],champ:null,hist:[],t:0,acc:0,follow:null,sps:0,seed:0,trng:null,
+    lastBest:0,reached:0};
+  const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+  function rng(seed){let s=seed>>>0;return()=>{s=(s+0x6D2B79F5)>>>0;let t=s;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+  function gauss(r){let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*PI*v)}
+
+  // ---------- the brain ----------
+  function randGenome(){
+    const g=new Float32Array(GN);let i=0;
+    for(let j=0;j<NI*NH;j++)g[i++]=gauss(Math.random)*0.7;
+    for(let j=0;j<NH;j++)g[i++]=gauss(Math.random)*0.3;
+    for(let j=0;j<NH*NO;j++)g[i++]=gauss(Math.random)*0.7;
+    for(let j=0;j<NO;j++)g[i++]=0;
+    return g;
+  }
+  const hid=new Float32Array(NH);
+  function think(g,x,out){
+    const o1=NI*NH,o2=o1+NH,o3=o2+NH*NO;
+    for(let h=0;h<NH;h++){let s=g[o1+h];const b=h*NI;for(let i=0;i<NI;i++)s+=g[b+i]*x[i];hid[h]=Math.tanh(s)}
+    for(let o=0;o<NO;o++){let s=g[o3+o];const b=o2+o*NH;for(let h=0;h<NH;h++)s+=g[b+h]*hid[h];out[o]=Math.tanh(s)}
+  }
+  function mutate(a,b){
+    const c=new Float32Array(GN),s=S.sigma;
+    for(let i=0;i<GN;i++){
+      let w=(b&&Math.random()<0.5)?b[i]:a[i];
+      if(Math.random()<MUT_P)w+=gauss(Math.random)*s;
+      if(Math.random()<0.002)w=gauss(Math.random)*0.8;
+      c[i]=w;
+    }
+    return c;
+  }
+
+  // ---------- targets (same list for every gorilla in a generation, so the comparison is fair) ----------
+  let spawnY=0,spawnY0=0;
+  function genTarget(prev,r){
+    let x=0,z=0,y=0;
+    for(let tries=0;tries<12;tries++){
+      const ang=r()*2*PI,d=12+r()*20;
+      x=clamp(prev.x+Math.cos(ang)*d,-46,46);z=clamp(prev.z+Math.sin(ang)*d,-46,46);
+      y=hgt(x,z);
+      if(!Number.isFinite(y)||Math.abs(y-spawnY0)>10)continue;
+      const y1=hgt(x+2.5,z),y2=hgt(x,z+2.5);
+      if(Number.isFinite(y1)&&Number.isFinite(y2)&&Math.max(y,y1,y2)-Math.min(y,y1,y2)<1.2)return V(x,y,z);
+    }
+    if(!Number.isFinite(y))y=spawnY0;
+    return V(x,y,z);
+  }
+  function targetAt(i){
+    while(S.targets.length<=i)S.targets.push(genTarget(S.targets.length?S.targets[S.targets.length-1]:{x:0,z:0},S.trng));
+    return S.targets[i];
+  }
+
+  // ---------- one gorilla body ----------
+  function mkAgent(genome){
+    const A={g:genome,pos:V(),vel:V(),yaw:0,a:[0,0],b:[.15,.15],prev:[V(),V()],ow:[V(),V()],touch:[false,false],
+      hv:[V(),V(),V(),V(),V()],hn:0,hi:0,was:false,ground:false,
+      out:new Float32Array(NO),inp:new Float32Array(NI),
+      fit:0,done:0,reach:0,leg:0,legD:0,minD:0,stallD:0,stall:0,t:0,alive:true};
+    respawn(A);return A;
+  }
+  function respawn(A){
+    A.pos.set(0,spawnY,0);A.vel.set(0,0,0);A.yaw=0;A.a[0]=A.a[1]=0;A.b[0]=A.b[1]=.15;
+    for(let k=0;k<2;k++)armOffset(P.g,k,A.a[k],A.b[k],A.prev[k]);
+    A.hn=0;A.hi=0;A.was=false;A.ground=false;A.touch[0]=A.touch[1]=false;A.out.fill(0);
+    A.fit=0;A.done=0;A.reach=0;A.leg=0;A.t=0;A.alive=true;A.stall=0;
+    const tg=targetAt(0);A.legD=A.minD=A.stallD=Math.hypot(tg.x-A.pos.x,tg.z-A.pos.z);
+  }
+  const _Y=V(0,1,0),_aq=new THREE.Quaternion(),_ac=[],_off=[V(),V()],_p2=V(),_dl2=V(),_disp=V(),_hp={x:0,y:0,z:0};
+  function observe(A,tg){
+    const x=A.inp,dx=tg.x-A.pos.x,dz=tg.z-A.pos.z,dist=Math.hypot(dx,dz)+1e-6;
+    const sy=Math.sin(A.yaw),cy=Math.cos(A.yaw),fx=-sy,fz=-cy,rx=cy,rz=-sy;   // forward / right of the gorilla
+    x[0]=(dx*fx+dz*fz)/dist;x[1]=(dx*rx+dz*rz)/dist;x[2]=Math.min(dist/30,1.5);x[3]=clamp((tg.y-A.pos.y)/6,-1,1);
+    x[4]=(A.vel.x*rx+A.vel.z*rz)/MAXV;x[5]=A.vel.y/MAXV;x[6]=(A.vel.x*fx+A.vel.z*fz)/MAXV;
+    x[7]=A.a[0]/1.5;x[8]=A.a[1]/1.5;x[9]=A.b[0]/1.5;x[10]=A.b[1]/1.5;
+    x[11]=A.touch[0]?1:0;x[12]=A.touch[1]?1:0;x[13]=A.ground?1:0;
+    const ph=2*PI*1.4*A.t;x[14]=Math.sin(ph);x[15]=Math.cos(ph);
+    for(let o=0;o<NO;o++)x[16+o]=A.out[o];
+  }
+  // same rules as stepPlayer(): a hand touching the map gets "stuck", so moving it moves the body the other way
+  function physics(A,dt){
+    const Rs=R*SIZE,RHs=RH*SIZE;_ac.length=0;
+    _aq.setFromAxisAngle(_Y,A.yaw+PI);
+    _disp.set(0,0,0);let touching=false;
+    for(let k=0;k<2;k++){
+      armOffset(P.g,k,A.a[k],A.b[k],_off[k]);A.ow[k].copy(_off[k]).applyQuaternion(_aq).multiplyScalar(SIZE);
+      _p2.copy(A.prev[k]).applyQuaternion(_aq).multiplyScalar(SIZE);_dl2.subVectors(A.ow[k],_p2);
+      if(MapCol.near(A.pos.x+A.ow[k].x,A.pos.y+A.ow[k].y,A.pos.z+A.ow[k].z,RHs+0.03)){_disp.sub(_dl2);touching=true;A.touch[k]=true}else A.touch[k]=false;
+      A.prev[k].copy(_off[k]);
+    }
+    if(touching){
+      moveBodyAt(A.pos,_disp.x,_disp.y,_disp.z,Rs,_ac);
+      for(let k=0;k<2;k++)if(A.touch[k]){
+        _hp.x=A.pos.x+A.ow[k].x;_hp.y=A.pos.y+A.ow[k].y;_hp.z=A.pos.z+A.ow[k].z;const hx=_hp.x,hy=_hp.y,hz=_hp.z;
+        MapCol.pushOut(_hp,RHs,null);
+        let cx=_hp.x-hx,cy=_hp.y-hy,cz=_hp.z-hz;const cl=Math.hypot(cx,cy,cz),mx=0.3*SIZE;
+        if(cl>mx){const f=mx/cl;cx*=f;cy*=f;cz*=f}
+        if(cl>0)moveBodyAt(A.pos,cx,cy,cz,Rs,_ac);
+      }
+      A.hv[A.hi].copy(_disp).divideScalar(dt);A.hi=(A.hi+1)%5;if(A.hn<5)A.hn++;
+      A.vel.set(0,0,0);for(let i=0;i<A.hn;i++)A.vel.add(A.hv[i]);A.vel.divideScalar(A.hn);
+      if(A.vel.length()>(MAXV*SIZE))A.vel.setLength(MAXV*SIZE);
+    }else{
+      if(A.was){A.vel.multiplyScalar(1.12);if(A.vel.length()>(MAXV*SIZE))A.vel.setLength(MAXV*SIZE)}
+      A.hn=0;A.hi=0;A.vel.y-=GRAV*SIZE*dt;
+      {const sp=A.vel.length(),cap=60*SIZE;if(sp>cap)A.vel.multiplyScalar(cap/sp)}
+      moveBodyAt(A.pos,A.vel.x*dt,A.vel.y*dt,A.vel.z*dt,Rs,_ac);
+    }
+    A.was=touching;
+    moveBodyAt(A.pos,0,0,0,Rs,_ac);
+    {const cr=bodyResponse(A.vel,_ac);A.ground=cr.ground;
+      if(cr.ground&&!touching){const f=Math.max(0,1-5*dt);A.vel.x*=f;A.vel.z*=f;if(cr.gy>0.7&&A.vel.length()<1.5)A.vel.set(0,0,0)}}
+    if(Math.abs(A.pos.x)>68){A.pos.x=Math.sign(A.pos.x)*68;A.vel.x=0}
+    if(Math.abs(A.pos.z)>68){A.pos.z=Math.sign(A.pos.z)*68;A.vel.z=0}
+  }
+  function stepAgent(A){
+    const tg=targetAt(A.leg);
+    observe(A,tg);think(A.g,A.inp,A.out);
+    const o=A.out;
+    for(let k=0;k<2;k++){
+      A.a[k]=clamp(A.a[k]+o[k]*ARM_RATE*DT,-1.4,1.6);
+      A.b[k]=clamp(A.b[k]+o[2+k]*ARM_RATE*DT,-0.3,1.5);
+    }
+    A.yaw-=o[4]*TURN_RATE*DT;
+    physics(A,DT);A.t+=DT;
+    // scoring: fitness = how much closer to the targets it got (+ a bonus for every target reached)
+    const d=Math.hypot(tg.x-A.pos.x,tg.z-A.pos.z);
+    if(d<A.minD)A.minD=d;
+    if(d<REACH&&Math.abs(tg.y-A.pos.y)<4){
+      A.done+=A.legD+REACH_BONUS;A.reach++;A.leg++;
+      const nt=targetAt(A.leg);A.legD=A.minD=A.stallD=Math.hypot(nt.x-A.pos.x,nt.z-A.pos.z);A.stall=0;
+    }
+    A.fit=A.done+(A.legD-A.minD);
+    if(A.minD<A.stallD-0.5){A.stallD=A.minD;A.stall=0}else A.stall+=DT;
+    if(A.stall>(S.mode==='watch'?14:STALL_T)||A.pos.y<spawnY0-80)A.alive=false;
+  }
+
+  // ---------- generations ----------
+  function startGen(){
+    S.seed=1000+S.gen*7919;S.trng=rng(S.seed);S.targets=[];
+    S.agents=S.pop.map(g=>mkAgent(g));S.t=0;S.follow=null;S.acc=0;
+  }
+  function startWatch(){
+    S.seed=(Math.random()*1e9)|0;S.trng=rng(S.seed);S.targets=[];
+    S.agents=[mkAgent(S.champ||S.pop[0])];S.t=0;S.follow=null;S.acc=0;
+  }
+  function tour(pool){let b=null;for(let i=0;i<3;i++){const c=pool[(Math.random()*pool.length)|0];if(!b||c.fit>b.fit)b=c}return b}
+  function evolve(){
+    const ag=S.agents.slice().sort((a,b)=>b.fit-a.fit),N=S.popN;
+    let sum=0;for(const a of ag)sum+=a.fit;
+    S.hist.push([ag[0].fit,sum/ag.length,ag[0].reach]);if(S.hist.length>400)S.hist.shift();
+    S.lastBest=ag[0].fit;S.reached=ag[0].reach;S.champ=ag[0].g.slice();
+    const nE=Math.max(2,Math.round(N*0.1)),pool=ag.slice(0,Math.max(4,Math.ceil(ag.length*0.4))),next=[];
+    for(let i=0;i<nE&&i<ag.length;i++)next.push(ag[i].g);                        // the best brains survive unchanged
+    while(next.length<N){
+      if(next.length===N-1&&N>=12&&Math.random()<0.5)next.push(randGenome());   // a fresh random brain now and then
+      else{const p1=tour(pool),p2=Math.random()<0.4?tour(pool):null;next.push(mutate(p1.g,p2&&p2.g))}
+    }
+    S.pop=next;S.gen++;S.sigma=clamp(0.3*Math.pow(0.985,S.gen),0.1,0.3);
+    save();
+  }
+  function simStep(){
+    let alive=0;
+    for(let i=0;i<S.agents.length;i++){const A=S.agents[i];if(A.alive){stepAgent(A);if(A.alive)alive++}}
+    S.t+=DT;
+    if(S.mode==='train'){if(alive===0||S.t>=EP_T){evolve();startGen()}}
+    else if(alive===0)startWatch();
+  }
+  function resizePop(){
+    const N=S.popN;
+    while(S.pop.length<N)S.pop.push(mutate(S.pop[S.pop.length%Math.max(1,S.pop.length)]||randGenome()));
+    S.pop.length=N;
+  }
+
+  // ---------- saving ----------
+  const r3=g=>Array.from(g,x=>Math.round(x*1000)/1000);
+  function pack(){return {v:1,gen:S.gen,sigma:S.sigma,popN:S.popN,hist:S.hist,champ:S.champ?r3(S.champ):null,pop:S.pop.map(r3)}}
+  function unpack(d){
+    if(!d||d.v!==1||!Array.isArray(d.pop)||!d.pop.length)return false;
+    if(d.pop.some(g=>!Array.isArray(g)||g.length!==GN)||(d.champ&&d.champ.length!==GN))return false;
+    S.gen=d.gen|0;S.hist=Array.isArray(d.hist)?d.hist:[];S.popN=clamp(d.popN|0||24,8,NMAX);
+    S.pop=d.pop.map(g=>Float32Array.from(g));S.champ=d.champ?Float32Array.from(d.champ):null;
+    S.sigma=clamp(0.3*Math.pow(0.985,S.gen),0.1,0.3);
+    if(S.hist.length){const h=S.hist[S.hist.length-1];S.lastBest=h[0];S.reached=h[2]}
+    resizePop();return true;
+  }
+  function save(){try{localStorage.setItem(SAVE_KEY,JSON.stringify(pack()))}catch(e){}}
+  function load(){try{const s=localStorage.getItem(SAVE_KEY);return s?unpack(JSON.parse(s)):false}catch(e){return false}}
+  function freshPop(){S.pop=[];for(let i=0;i<S.popN;i++)S.pop.push(randGenome())}
+
+  // ---------- visuals ----------
+  const bodyM=new THREE.InstancedMesh(new THREE.SphereGeometry(R*SIZE,18,12),new THREE.MeshStandardMaterial({roughness:.55,transparent:true,opacity:.9}),NMAX);
+  const handM=new THREE.InstancedMesh(new THREE.SphereGeometry(0.15,10,8),new THREE.MeshStandardMaterial({roughness:.5}),NMAX*2);
+  [bodyM,handM].forEach(m=>{m.frustumCulled=false;m.count=0;scene.add(m)});
+  const beacon=new THREE.Group();
+  {const mat=new THREE.MeshBasicMaterial({color:0x66ffaa,transparent:true,opacity:.35,depthWrite:false,side:THREE.DoubleSide});
+    const pil=new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.35,20,16,1,true),mat);pil.position.y=10;beacon.add(pil);
+    const ring=new THREE.Mesh(new THREE.RingGeometry(REACH-0.18,REACH,40),mat);ring.rotation.x=-PI/2;ring.position.y=0.15;beacon.add(ring);
+    scene.add(beacon)}
+  const _m=new THREE.Matrix4(),_qq=new THREE.Quaternion(),_ps=V(),_sc=V(1,1,1),_col=new THREE.Color(),_zero=V(0.0001,0.0001,0.0001);
+  const cAlive=new THREE.Color(0x4ab3ff),cDead=new THREE.Color(0x6b7280),cTop=new THREE.Color(0xffd54a);
+  function chooseFollow(){
+    let best=null;for(const A of S.agents)if(A.alive&&(!best||A.fit>best.fit))best=A;
+    const f=S.follow;
+    if(!f||!f.alive||(best&&best!==f&&best.fit>f.fit+3))S.follow=best||f||S.agents[0];
+  }
+  function syncPlayer(A){
+    P.pos.copy(A.pos);P.vel.copy(A.vel);P.yaw=A.yaw;P.a[0]=A.a[0];P.a[1]=A.a[1];P.b[0]=A.b[0];P.b[1]=A.b[1];
+    const g=P.g.group;g.scale.setScalar(SIZE);g.position.copy(A.pos);g.rotation.y=A.yaw+PI;g.updateMatrixWorld(true);
+    aim(P.g,0,A.a[0],A.b[0]);aim(P.g,1,A.a[1],A.b[1]);
+  }
+  function updateVisuals(){
+    chooseFollow();
+    const ag=S.agents,n=ag.length;
+    const rank=ag.slice().sort((a,b)=>b.fit-a.fit);
+    bodyM.count=n;handM.count=n*2;
+    for(let i=0;i<n;i++){
+      const A=ag[i],hide=A===S.follow;
+      _ps.copy(A.pos);_qq.setFromAxisAngle(_Y,A.yaw+PI);
+      _m.compose(_ps,_qq,hide?_zero:_sc);bodyM.setMatrixAt(i,_m);
+      for(let k=0;k<2;k++){_ps.set(A.pos.x+A.ow[k].x,A.pos.y+A.ow[k].y,A.pos.z+A.ow[k].z);_m.compose(_ps,_qq,hide?_zero:_sc);handM.setMatrixAt(i*2+k,_m)}
+      const top=rank.indexOf(A)<3&&A.fit>0;
+      _col.copy(!A.alive?cDead:top?cTop:cAlive);bodyM.setColorAt(i,_col);handM.setColorAt(i*2,_col);handM.setColorAt(i*2+1,_col);
+    }
+    bodyM.instanceMatrix.needsUpdate=handM.instanceMatrix.needsUpdate=true;
+    if(bodyM.instanceColor)bodyM.instanceColor.needsUpdate=true;if(handM.instanceColor)handM.instanceColor.needsUpdate=true;
+    const F=S.follow;
+    if(F){syncPlayer(F);const tg=targetAt(F.leg);beacon.position.set(tg.x,tg.y,tg.z);beacon.visible=true}
+  }
+  const _cd=V(0,0,1),_cw=V(),_cl=V();
+  function camera(dt){
+    const F=S.follow||S.agents[0];if(!F)return;
+    if(S.cam==='top'){
+      let cx=0,cz=0,c=0;for(const A of S.agents){cx+=A.pos.x;cz+=A.pos.z;c++}cx/=c||1;cz/=c||1;
+      _cw.set(cx,70,cz+48);cam.position.lerp(_cw,1-Math.exp(-3*dt));cam.lookAt(cx,0,cz);return;
+    }
+    const tg=targetAt(F.leg);
+    _cl.set(F.pos.x-tg.x,0,F.pos.z-tg.z);if(_cl.lengthSq()<1)_cl.set(0,0,1);_cl.normalize();
+    _cd.lerp(_cl,1-Math.exp(-2*dt));if(_cd.lengthSq()<1e-4)_cd.copy(_cl);_cd.normalize();
+    _cw.set(F.pos.x+_cd.x*9,F.pos.y+4.5,F.pos.z+_cd.z*9);
+    cam.position.lerp(_cw,1-Math.exp(-5*dt));
+    cam.lookAt(F.pos.x*0.78+tg.x*0.22,F.pos.y+1.2,F.pos.z*0.78+tg.z*0.22);
+  }
+
+  // ---------- panel ----------
+  const el=document.createElement('div');el.id='aipanel';
+  el.innerHTML='<div class="aih"><b>🧠 Monke AI</b><span class="aisub" id="ai_sub"></span><button id="ai_toggle" title="T">Take control</button></div>'+
+    '<div id="ai_body">'+
+    '<div class="airow"><button id="ai_train" class="on">Training</button><button id="ai_watch">Watch best</button></div>'+
+    '<div id="ai_stats"></div>'+
+    '<canvas id="ai_chart" width="236" height="64"></canvas>'+
+    '<div class="airow">Speed <input id="ai_speed" type="range" min="1" max="40" step="1"><span id="ai_speedv"></span></div>'+
+    '<div class="airow">Population <select id="ai_pop"><option>12</option><option>24</option><option>36</option><option>48</option></select></div>'+
+    '<div class="airow"><button id="ai_pause">Pause</button><button id="ai_cam">Cam: Follow</button><button id="ai_reset">Restart</button></div>'+
+    '<div class="airow"><button id="ai_exp">⬇ Export</button><button id="ai_imp">⬆ Import</button><input id="ai_file" type="file" accept=".json" style="display:none"></div>'+
+    '<small>Gold = leading gorillas, blue = the rest, grey = gave up. The green beacon is the leader\'s target. Progress saves automatically. <b>T</b> = take control.</small>'+
+    '</div>';
+  document.body.appendChild(el);
+  ['mousedown','click','mouseup','wheel'].forEach(ev=>el.addEventListener(ev,e=>e.stopPropagation()));
+  const q=id=>document.getElementById(id);
+  const chart=q('ai_chart').getContext('2d');
+  function drawChart(){
+    const w=236,h=64;chart.clearRect(0,0,w,h);chart.fillStyle='rgba(255,255,255,.07)';chart.fillRect(0,0,w,h);
+    const H=S.hist.slice(-80);if(H.length<2){chart.fillStyle='#fff9';chart.font='11px sans-serif';chart.fillText('fitness per generation appears here',10,36);return}
+    let mx=1;for(const r of H)mx=Math.max(mx,r[0]);
+    const line=(idx,color)=>{chart.beginPath();H.forEach((r,i)=>{const x=i/(H.length-1)*(w-4)+2,y=h-3-(r[idx]/mx)*(h-8);i?chart.lineTo(x,y):chart.moveTo(x,y)});chart.strokeStyle=color;chart.lineWidth=1.6;chart.stroke()};
+    line(1,'#4ab3ff');line(0,'#ffd54a');
+  }
+  let uiT=0;
+  function refreshUI(){
+    let alive=0,best=null;for(const A of S.agents){if(A.alive)alive++;if(!best||A.fit>best.fit)best=A}
+    q('ai_stats').innerHTML=S.mode==='train'
+      ?`Generation <b>${S.gen}</b> · alive <b>${alive}/${S.agents.length}</b> · ${S.t.toFixed(0)}s<br>Best now <b>${best?best.fit.toFixed(0):0}</b> (${best?best.reach:0} targets) · last gen <b>${S.lastBest.toFixed(0)}</b> (${S.reached})`
+      :`Watching the best brain (gen ${S.gen})<br>Targets reached: <b>${best?best.reach:0}</b> · ${S.t.toFixed(0)}s`;
+    q('ai_speedv').textContent=S.speed+'×';
+    q('ai_sub').textContent=S.paused?'paused':'';
+    drawChart();
+  }
+  function setMode(m){S.mode=m;q('ai_train').classList.toggle('on',m==='train');q('ai_watch').classList.toggle('on',m==='watch');if(m==='train')startGen();else startWatch();refreshUI()}
+  q('ai_train').onclick=()=>setMode('train');
+  q('ai_watch').onclick=()=>setMode('watch');
+  q('ai_speed').value=S.speed;q('ai_speed').oninput=e=>{S.speed=+e.target.value;q('ai_speedv').textContent=S.speed+'×'};
+  q('ai_pop').onchange=e=>{S.popN=+e.target.value;resizePop();if(S.mode==='train')startGen();save()};
+  q('ai_pause').onclick=()=>{S.paused=!S.paused;q('ai_pause').textContent=S.paused?'Resume':'Pause';refreshUI()};
+  q('ai_cam').onclick=()=>{S.cam=S.cam==='follow'?'top':'follow';q('ai_cam').textContent='Cam: '+(S.cam==='follow'?'Follow':'Overview')};
+  q('ai_reset').onclick=()=>{if(!confirm('Forget everything the gorillas learned and start over?'))return;S.gen=0;S.hist=[];S.champ=null;S.lastBest=0;S.reached=0;S.sigma=0.3;freshPop();save();setMode(S.mode)};
+  q('ai_exp').onclick=()=>{const b=new Blob([JSON.stringify(pack())],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='monke-brain.json';document.body.appendChild(a);a.click();a.remove()};
+  q('ai_imp').onclick=()=>q('ai_file').click();
+  q('ai_file').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{if(unpack(JSON.parse(t))){q('ai_pop').value=S.popN;save();setMode(S.mode)}else alert('That file is not a Monke AI brain (or it is from a different version).')}).catch(()=>alert('Could not read that file.'));e.target.value=''};
+  function setOn(on){
+    S.on=on;q('ai_body').style.display=on?'block':'none';q('ai_toggle').textContent=on?'Take control':'Back to AI';
+    bodyM.visible=handM.visible=beacon.visible=on;
+    if(on){try{document.exitPointerLock()}catch(e){}$('help').style.display='none';P.g.group.visible=true}
+    else{reset();$('help').style.display='flex'}
+  }
+  q('ai_toggle').onclick=()=>setOn(!S.on);
+  addEventListener('keydown',e=>{if(e.code==='KeyT'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='SELECT')setOn(!S.on)});
+
+  // ---------- boot ----------
+  spawnY0=hgt(0,0);spawnY=spawnY0+(R+0.2)*SIZE;
+  if(!load()){freshPop()}
+  q('ai_pop').value=S.popN;
+  startGen();refreshUI();setOn(true);
+
+  S.tick=function(dt){
+    if(!S.paused){
+      S.acc+=dt/DT*S.speed;let n=Math.floor(S.acc);S.acc-=n;
+      const t0=performance.now(),budget=S.speed>8?28:14;let done=0;
+      while(done<n){simStep();done++;if(performance.now()-t0>budget){S.acc=0;break}}
+      S.sps=done;
+    }
+    updateVisuals();
+    uiT-=dt;if(uiT<=0){uiT=0.25;refreshUI()}
+  };
+  S.camera=camera;
+  S.runGens=(n)=>{const g0=S.gen;let guard=0;while(S.gen<g0+n&&guard++<5e6)simStep()};   // no-render fast training (used for testing)
+  S.setOn=setOn;S.setMode=setMode;S.R={targetAt,startGen,evolve};
+  window.monkeAI=S;   // handy for poking around in the browser console
+  return S;
+})();
+
 // ---------- VR (WebXR): headset = body, controllers = hands ----------
 const VS=1.4; // VR world scale: makes your real arms reach the ground like a gorilla's
 const grips=[0,1].map(i=>{const g=renderer.xr.getControllerGrip(i);rig.add(g);return g});
@@ -832,7 +1177,7 @@ function setHead(sc){P.g.group.traverse(o=>{if(o.isBone&&/^Head/.test(o.name.rep
 renderer.xr.addEventListener('sessionstart',()=>{rig.scale.setScalar(VS*SIZE);rig.position.set(P.pos.x,hgt(P.pos.x,P.pos.z)+0.5*SIZE,P.pos.z);
   P.vel.set(0,0,0);P.hist=[];P.g.group.scale.setScalar(SIZE);setHead(1);headS=1;tpOff.set(0,0,0);vrInit=true;$('help').style.display='none'});
 renderer.xr.addEventListener('sessionend',()=>{rig.scale.setScalar(1);rig.position.set(0,0,0);rig.rotation.set(0,0,0);
-  setHead(1);P.g.rig.head.quaternion.copy(_headBaseQ);tpOff.set(0,0,0);[0,1].forEach(k=>P.g.rig.upper[k].scale.set(1,1,1));reset();if(!locked)$('help').style.display='flex'});
+  setHead(1);P.g.rig.head.quaternion.copy(_headBaseQ);tpOff.set(0,0,0);[0,1].forEach(k=>P.g.rig.upper[k].scale.set(1,1,1));reset();if(!locked&&!AI.on)$('help').style.display='flex'});
 const _hd=V();
 // Track headset pitch on the avatar's head bone without tilting the torso.
 const _headBaseQ=P.g.rig.head.quaternion.clone(),_headWorldQ=new THREE.Quaternion(),_rigWorldQ=new THREE.Quaternion(),_headLocalQ=new THREE.Quaternion(),_headPitchQ=new THREE.Quaternion(),_headPitchAxis=V(1,0,0);
@@ -1196,11 +1541,12 @@ camTick=function(dt){
 const clock=new THREE.Clock();let t=0;
 renderer.setAnimationLoop(()=>{
   const dt=Math.min(clock.getDelta(),1/30);t+=dt;
-  if(renderer.xr.isPresenting)stepVR(dt);else stepPlayer(dt);
+  if(renderer.xr.isPresenting)stepVR(dt);else if(AI.on)AI.tick(dt);else stepPlayer(dt);
   if(P.g.spin)P.g.spin.rotation.y+=dt*25;
-  furTick(t);stepRemotes(dt);netTick(dt);gameTick(dt);voiceTick();vrMenuTick(dt);camTick(dt);
+  furTick(t);stepRemotes(dt);if(!AI.on)netTick(dt);gameTick(dt);voiceTick();vrMenuTick(dt);camTick(dt);
   const f=V(-Math.sin(P.yaw),0,-Math.cos(P.yaw));
   if(renderer.xr.isPresenting){}
+  else if(AI.on){AI.camera(dt)}
   else if(P.third){cam.position.copy(P.pos).addScaledVector(f,-3.2*SIZE).add(V(0,1.4*SIZE,0));cam.lookAt(P.pos)}
   else{cam.position.copy(P.g.group.localToWorld(V(0,0.5,0.28)));cam.rotation.set(P.pitch,P.yaw,0,'YXZ')}
   $('sub').textContent=`Speed: ${P.vel.length().toFixed(1)} m/s`;
