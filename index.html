@@ -876,7 +876,7 @@ function applyBot(d){
 const AI=(()=>{
   const NI=21,NH=16,NO=5,GN=NI*NH+NH+NH*NO+NO;       // network: 21 inputs -> 16 hidden (tanh) -> 5 outputs (tanh)
   const DT=1/60,EP_T=30,STALL_T=9,REACH=2.4,REACH_BONUS=10,ARM_RATE=7,TURN_RATE=2.6,NMAX=60,MUT_P=0.15,SAVE_KEY='monkeAI_v1';
-  const S={on:true,mode:'train',paused:false,speed:6,popN:24,gen:0,sigma:0.3,cam:'follow',
+  const S={on:true,mode:'train',paused:false,speed:6,popN:8,gen:0,sigma:0.3,cam:'follow',
     pop:[],agents:[],targets:[],champ:null,hist:[],t:0,acc:0,follow:null,sps:0,seed:0,trng:null,
     lastBest:0,reached:0,style:{on:false,w:6,top:9,vids:[],ref:null,busy:'',err:''}};
   const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -1093,16 +1093,30 @@ const AI=(()=>{
   function startGoto(){startLineup();S.clickT=null}
   function tour(pool){let b=null;for(let i=0;i<3;i++){const c=pool[(Math.random()*pool.length)|0];if(!b||c.fit>b.fit)b=c}return b}
   function evolve(){
+    // One evolution rule for every supported population size. The population size
+    // changes only how many agents are evaluated and how many offspring are made.
     const ag=S.agents.slice().sort((a,b)=>b.fit-a.fit),N=S.popN;
     let sum=0;for(const a of ag)sum+=a.fit;
     S.hist.push([ag[0].fit,sum/ag.length,ag[0].reach]);if(S.hist.length>400)S.hist.shift();
     S.lastBest=ag[0].fit;S.reached=ag[0].reach;S.champ=ag[0].g.slice();
-    const nE=Math.max(2,Math.round(N*0.1)),pool=ag.slice(0,Math.max(4,Math.ceil(ag.length*0.4))),next=[];
-    for(let i=0;i<nE&&i<ag.length;i++)next.push(ag[i].g);                        // the best brains survive unchanged
+
+    // Elitism: keep the strongest brains exactly as they are.
+    const eliteCount=Math.max(1,Math.round(N*0.1));
+    // Parent pool: the strongest 40% of the population, with a minimum of 2
+    // parents so even a 4-agent population can evolve normally.
+    const parentCount=Math.max(2,Math.ceil(N*0.4));
+    const parents=ag.slice(0,parentCount);
+    const next=[];
+    for(let i=0;i<Math.min(eliteCount,N);i++)next.push(ag[i].g.slice());
+
+    // Fill every remaining slot with mutated offspring selected from the same
+    // parent pool. No population-size-specific evolution path is used.
     while(next.length<N){
-      if(next.length===N-1&&N>=12&&Math.random()<0.5)next.push(randGenome());   // a fresh random brain now and then
-      else{const p1=tour(pool),p2=Math.random()<0.4?tour(pool):null;next.push(mutate(p1.g,p2&&p2.g))}
+      const p1=tour(parents);
+      const p2=Math.random()<0.4?tour(parents):null;
+      next.push(mutate(p1.g,p2&&p2.g));
     }
+
     S.pop=next;S.gen++;S.sigma=clamp(0.3*Math.pow(0.985,S.gen),0.1,0.3);
     save();
   }
@@ -1138,7 +1152,7 @@ const AI=(()=>{
   function unpack(d){
     if(!d||d.v!==1||!Array.isArray(d.pop)||!d.pop.length)return false;
     if(d.pop.some(g=>!Array.isArray(g)||g.length!==GN)||(d.champ&&d.champ.length!==GN))return false;
-    S.gen=d.gen|0;S.hist=Array.isArray(d.hist)?d.hist:[];S.popN=clamp(d.popN|0||24,8,NMAX);
+    S.gen=d.gen|0;S.hist=Array.isArray(d.hist)?d.hist:[];S.popN=clamp(d.popN|0||8,4,NMAX);
     S.pop=d.pop.map(g=>Float32Array.from(g));S.champ=d.champ?Float32Array.from(d.champ):null;
     S.sigma=clamp(0.3*Math.pow(0.985,S.gen),0.1,0.3);
     if(S.hist.length){const h=S.hist[S.hist.length-1];S.lastBest=h[0];S.reached=h[2]}
@@ -1252,7 +1266,8 @@ const AI=(()=>{
     '<div id="ai_stats"></div>'+
     '<canvas id="ai_chart" width="236" height="64"></canvas>'+
     '<div class="airow">Speed <input id="ai_speed" type="range" min="1" max="40" step="1"><span id="ai_speedv"></span></div>'+
-    '<div class="airow">Population <select id="ai_pop"><option>12</option><option>24</option><option>36</option><option>48</option></select></div>'+
+    '<div class="airow">Population <select id="ai_pop"><option>4</option><option>8</option><option>12</option><option>24</option><option>36</option><option>48</option></select></div>'+
+    '<small>Recommended: <b>4 or 8 agents</b> for faster experimentation. Larger populations are available when you want broader evolution.</small>'+
     '<div class="airow"><button id="ai_pause">Pause</button><button id="ai_cam">Cam: Follow</button><button id="ai_reset">Restart</button></div>'+
     '<div class="airow"><button id="ai_exp">⬇ Export</button><button id="ai_imp">⬆ Import</button><input id="ai_file" type="file" accept=".json" style="display:none"></div>'+
     '<div class="airow"><b>🎞 Learn from videos</b></div>'+
